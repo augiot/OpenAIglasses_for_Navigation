@@ -47,7 +47,7 @@ def gpu_infer_slot():
 
 
 class ObstacleDetectorClient:
-    def __init__(self, model_path: str = 'models/yoloe-11l-seg.pt'):
+    def __init__(self, model_path: str = 'model/yoloe-11l-seg.pt'):
         self.model = None
         self.whitelist_embeddings = None
         self.WHITELIST_CLASSES = [
@@ -68,7 +68,9 @@ class ObstacleDetectorClient:
                 with torch.inference_mode(), torch.amp.autocast(device_type='cuda', dtype=AMP_DTYPE):
                     self.whitelist_embeddings = self.model.get_text_pe(self.WHITELIST_CLASSES)
             else:
-                self.whitelist_embeddings = self.model.get_text_pe(self.WHITELIST_CLASSES)
+                # self.whitelist_embeddings = self.model.get_text_pe(self.WHITELIST_CLASSES)
+                logger.info("跳过文本特征预计算，直接使用类名...")
+                self.whitelist_embeddings = None  # 不使用预计算的嵌入，让模型自己处理文本特征
             logger.info("YOLOE 特征预计算完成。")
         except Exception as e:
             logger.error(f"YOLOE 模型加载或特征计算失败: {e}", exc_info=True)

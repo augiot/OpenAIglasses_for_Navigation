@@ -1,6 +1,6 @@
 # app_main.py
 # -*- coding: utf-8 -*-
-import os, sys, time, json, asyncio, base64, audioop
+import os, sys, time, json, asyncio, base64, audioop, argparse
 from typing import Any, Dict, Optional, Tuple, List, Callable, Set, Deque
 from collections import deque
 from dataclasses import dataclass
@@ -223,6 +223,29 @@ def load_navigation_models():
         import traceback
         traceback.print_exc()
 
+# 解析命令行参数
+parser = argparse.ArgumentParser(description='AI眼镜导航系统')
+parser.add_argument('--local-camera', action='store_true', help='使用本地摄像头进行调试，不连接ESP32眼镜')
+parser.add_argument('--camera-index', type=int, default=0, help='本地摄像头索引 (默认: 0)')
+args = parser.parse_args()
+
+# 检查是否启用本地摄像头调试模式
+use_local_camera = args.local_camera
+local_camera_index = args.camera_index
+
+if use_local_camera:
+    print(f"[DEBUG] 启用本地摄像头调试模式，摄像头索引: {local_camera_index}")
+    # 导入并启动本地摄像头模块
+    from local_camera_debug import start_local_camera_mode, CAMERA_INDEX
+    # 设置摄像头索引
+    import local_camera_debug
+    local_camera_debug.CAMERA_INDEX = local_camera_index
+    # 启动本地摄像头
+    start_local_camera_mode()
+else:
+    print("[INFO] 标准模式：等待ESP32眼镜连接")
+    print("[INFO] 提示：使用 --local-camera 参数可启用本地摄像头调试模式")
+
 # 在程序启动时加载模型
 print("[NAVIGATION] 开始加载导航模型...")
 load_navigation_models()
@@ -242,6 +265,14 @@ def cleanup_on_exit():
         print("[SYSTEM] 录制文件已保存")
     except Exception as e:
         print(f"[SYSTEM] 关闭录制器时出错: {e}")
+    
+    # 如果启用了本地摄像头模式，确保停止
+    if use_local_camera:
+        try:
+            from local_camera_debug import stop_local_camera_mode
+            stop_local_camera_mode()
+        except Exception as e:
+            print(f"[SYSTEM] 停止本地摄像头时出错: {e}")
 
 def signal_handler(sig, frame):
     """处理Ctrl+C信号"""

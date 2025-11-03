@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 import os, base64
 from typing import AsyncGenerator, Dict, Any, List, Optional, Tuple
-
+import httpx
 from openai import OpenAI
 
 # ===== OpenAI 兼容（达摩院 DashScope 兼容模式）=====
@@ -12,10 +12,17 @@ if not API_KEY:
 
 QWEN_MODEL = "qwen-omni-turbo"
 
-# 兼容模式
+# 兼容模式 - 创建不使用proxies参数的httpx客户端
+http_client = httpx.Client(
+    timeout=30.0,
+    follow_redirects=True
+    # 显式不设置proxies参数
+)
+
 oai_client = OpenAI(
     api_key=API_KEY,
     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    http_client=http_client
 )
 
 class OmniStreamPiece:
