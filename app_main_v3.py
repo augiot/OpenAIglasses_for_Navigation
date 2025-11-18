@@ -1,6 +1,6 @@
 # app_main.py
 # -*- coding: utf-8 -*-
-import os, sys, time, json, asyncio, base64, audioop
+import os, sys, time, json, asyncio, base64, audioop, argparse
 from typing import Any, Dict, Optional, Tuple, List, Callable, Set, Deque
 from collections import deque
 from dataclasses import dataclass
@@ -154,7 +154,7 @@ def load_navigation_models():
             print(f"[NAVIGATION] 请检查文件路径是否正确")
             
         # 【修改开始】使用 ObstacleDetectorClient 替代直接的 YOLO
-        obstacle_model_path = os.getenv("OBSTACLE_MODEL", r"C:\Users\Administrator\Desktop\rebuild1002\model\yoloe-11l-seg.pt")
+        obstacle_model_path = os.getenv("OBSTACLE_MODEL", "./model/yoloe-11l-seg.pt")
         print(f"[NAVIGATION] 尝试加载障碍物检测模型: {obstacle_model_path}")
         
         if os.path.exists(obstacle_model_path):
@@ -223,6 +223,32 @@ def load_navigation_models():
         import traceback
         traceback.print_exc()
 
+# 解析命令行参数
+parser = argparse.ArgumentParser(description='AI眼镜导航系统')
+parser.add_argument('--local-camera', action='store_true', help='使用本地摄像头进行调试，不连接ESP32眼镜')
+parser.add_argument('--camera-index', type=int, default=0, help='本地摄像头索引 (默认: 0)')
+parser.add_argument('--enable-simulator', action='store_true', help='启用模拟器模式（允许多个客户端连接到相机WebSocket）')
+args = parser.parse_args()
+
+# 检查是否启用本地摄像头调试模式
+use_local_camera = args.local_camera
+local_camera_index = args.camera_index
+# 检查是否启用模拟器模式
+enable_simulator = args.enable_simulator
+
+if use_local_camera:
+    print(f"[DEBUG] 启用本地摄像头调试模式，摄像头索引: {local_camera_index}")
+    # 导入并启动本地摄像头模块
+    from local_camera_debug import start_local_camera_mode, CAMERA_INDEX
+    # 设置摄像头索引
+    import local_camera_debug
+    local_camera_debug.CAMERA_INDEX = local_camera_index
+    # 启动本地摄像头
+    start_local_camera_mode()
+else:
+    print("[INFO] 标准模式：等待ESP32眼镜连接")
+    print("[INFO] 提示：使用 --local-camera 参数可启用本地摄像头调试模式")
+
 # 在程序启动时加载模型
 print("[NAVIGATION] 开始加载导航模型...")
 load_navigation_models()
@@ -242,6 +268,14 @@ def cleanup_on_exit():
         print("[SYSTEM] 录制文件已保存")
     except Exception as e:
         print(f"[SYSTEM] 关闭录制器时出错: {e}")
+    
+    # 如果启用了本地摄像头模式，确保停止
+    if use_local_camera:
+        try:
+            from local_camera_debug import stop_local_camera_mode
+            stop_local_camera_mode()
+        except Exception as e:
+            print(f"[SYSTEM] 停止本地摄像头时出错: {e}")
 
 def signal_handler(sig, frame):
     """处理Ctrl+C信号"""
@@ -859,18 +893,24 @@ async def ws_audio(ws: WebSocket):
             esp32_audio_ws = None
         print("[WS] connection closed")
 
-# ---------- WebSocket：ESP32 相机入口（JPEG 二进制） ----------
+# ---------- WebSocket：相机入口（支持模拟器模式） ----------
 @app.websocket("/ws/camera")
 async def ws_camera_esp(ws: WebSocket):
     global esp32_camera_ws, blind_path_navigator, cross_street_navigator, cross_street_active, navigation_active, orchestrator
-    if esp32_camera_ws is not None:
+    
+    # 在模拟器模式下允许多个客户端连接
+    if not enable_simulator and esp32_camera_ws is not None:
         await ws.close(code=1013)
         return
+        
+    # 在模拟器模式下，只记录最后连接的客户端
+    if enable_simulator:
+        print("[SIMULATOR MODE] 新的相机模拟器客户端已连接")
     esp32_camera_ws = ws
     await ws.accept()
     print("[CAMERA] ESP32 connected")
     
-    # 【新增】初始化盲道导航器
+    # 【新增】初始化盲道导航器（在模拟器模式下也会自动初始化）
     if blind_path_navigator is None and yolo_seg_model is not None:
         blind_path_navigator = BlindPathNavigator(yolo_seg_model, obstacle_detector)
         print("[NAVIGATION] 盲道导航器已初始化")
@@ -909,6 +949,10 @@ async def ws_camera_esp(ws: WebSocket):
                 data = msg["bytes"]
                 frame_counter += 1
                 
+                # 在模拟器模式下添加特殊标记
+                if enable_simulator and frame_counter % 30 == 0:
+                    print(f"[SIMULATOR MODE] 收到来自模拟器的帧 #{frame_counter}")
+                    
                 # 【新增】录制原始帧
                 try:
                     sync_recorder.record_frame(data)
@@ -1042,8 +1086,12 @@ async def ws_camera_esp(ws: WebSocket):
                 await ws.close(code=1000)
         except Exception:
             pass
-        esp32_camera_ws = None
-        print("[CAMERA] ESP32 disconnected")
+        
+        # 在模拟器模式下，不重置 esp32_camera_ws，因为可能还有其他客户端
+        if not enable_simulator:
+            esp32_camera_ws = None
+        
+        print("[CAMERA] 相机客户端已断开" + ("（模拟器模式）" if enable_simulator else ""))
         
         # 【新增】清理导航状态
         if blind_path_navigator:
@@ -1287,6 +1335,18 @@ async def on_startup_init_audio():
 async def on_startup():
     loop = asyncio.get_running_loop()
     await loop.create_datagram_endpoint(lambda: UDPProto(), local_addr=(UDP_IP, UDP_PORT))
+    
+    # 打印启动信息
+    if enable_simulator:
+        print("\n========= 模拟器模式已启用 =========")
+        print("系统已配置为接受模拟的ESP32客户端连接")
+        print("要启动模拟器，请运行：python esp32_simulator.py")
+        print("=================================\n")
+    else:
+        print("\n========= 标准模式已启动 =========")
+        print("等待真实ESP32眼镜连接...")
+        print("或使用 --enable-simulator 参数启用模拟器模式")
+        print("=================================\n")
 
 @app.on_event("shutdown")
 async def on_shutdown():
@@ -1312,8 +1372,12 @@ def get_camera_ws():
     return esp32_camera_ws
 
 if __name__ == "__main__":
+    # 在模拟器模式下，可以启用reload便于开发调试
     uvicorn.run(
         app, host="0.0.0.0", port=8081,
-        log_level="warning", access_log=False,
-        loop="asyncio", workers=1, reload=False
+        log_level="warning" if not enable_simulator else "info", 
+        access_log=False,
+        loop="asyncio", 
+        workers=1, 
+        reload=enable_simulator  # 模拟器模式下启用自动重载
     )
